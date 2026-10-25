@@ -1,0 +1,60 @@
+diff --git a/script/run.py b/script/run.py
+index a7ae350..3a55e83 100644
+--- a/script/run.py
++++ b/script/run.py
+@@ -50,8 +50,25 @@ def train_and_validate(cfg, model, train_data, valid_data, device, logger, filte
+     best_result = float("-inf")
+     best_epoch = -1
+ 
+-    batch_id = 0
+-    for i in range(0, cfg.train.num_epoch, step):
++    start_epoch = int(cfg.get("resume_epoch", 0))
++    if start_epoch:
++        if world_size != 1:
++            raise ValueError("This resume implementation requires a single GPU")
++        state = torch.load(cfg.checkpoint, map_location=device)
++        optimizer.load_state_dict(state["optimizer"])
++        # Re-evaluate saved checkpoints on VALID only to preserve historical selection.
++        for item in cfg.resume_history:
++            saved = torch.load(item["path"], map_location=device)
++            model.load_state_dict(saved["model"])
++            result = test(cfg, model, valid_data, filtered_data=filtered_data, device=device, logger=logger)
++            if result > best_result:
++                best_result, best_epoch = result, int(item["epoch"])
++                torch.save(saved, "model_epoch_%d.pth" % best_epoch)
++        model.load_state_dict(state["model"])
++        logger.warning("Resume after %d completed epochs; optimizer restored. Legacy RNG state unavailable.", start_epoch)
++
++    batch_id = start_epoch * batch_per_epoch
++    for i in range(start_epoch, cfg.train.num_epoch, step):
+         parallel_model.train()
+         for epoch in range(i, min(cfg.train.num_epoch, i + step)):
+             if util.get_rank() == 0:
+diff --git a/ultra/rspmm/source/rspmm.cu b/ultra/rspmm/source/rspmm.cu
+index 8cacfcf..6bab933 100644
+--- a/ultra/rspmm/source/rspmm.cu
++++ b/ultra/rspmm/source/rspmm.cu
+@@ -1,4 +1,4 @@
+-#include <ATen/cuda/CUDAContext.h>
++#include <c10/cuda/CUDAStream.h>
+ #include <THC/THCAtomics.cuh>
+ 
+ #include "util.cuh"
+@@ -241,7 +241,7 @@ Tensor rspmm_forward_cuda(const Tensor &edge_index_, const Tensor &edge_type_, c
+     Tensor layer_ind = edge_type;
+ 
+     cudaSetDevice(input.get_device());
+-    auto stream = at::cuda::getCurrentCUDAStream();
++    auto stream = c10::cuda::getCurrentCUDAStream();
+ 
+     const int dim_per_block = 32; // warpSize
+     const int num_dim_block = (dim + dim_per_block * kCoarseningFactor - 1) / (dim_per_block * kCoarseningFactor);
+@@ -302,7 +302,7 @@ std::tuple<Tensor, Tensor, Tensor> rspmm_backward_cuda(
+     Tensor layer_ind = edge_type;
+ 
+     cudaSetDevice(input.get_device());
+-    auto stream = at::cuda::getCurrentCUDAStream();
++    auto stream = c10::cuda::getCurrentCUDAStream();
+ 
+     const int dim_per_block = 32; // warpSize
+     const int num_dim_block = (dim + dim_per_block * kCoarseningFactor - 1) / (dim_per_block * kCoarseningFactor);

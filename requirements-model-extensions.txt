@@ -1,0 +1,18 @@
+# Reference versions used by model_extensions/scripts/setup_server.sh.
+# Install PyTorch and PyG from the CUDA-specific indexes documented in README.md.
+numpy==1.26.4
+transformers==4.38.2
+tokenizers==0.15.2
+huggingface-hub==0.23.5
+safetensors==0.4.5
+torch-geometric==2.4.0
+torch-scatter==2.1.2
+torch-sparse==0.6.18
+easydict==1.13
+PyYAML>=6.0,<7
+scipy>=1.10,<2
+scikit-learn>=1.2,<2
+tqdm>=4.65
+packaging>=23
+ninja>=1.11
+jinja2>=3.1

@@ -1,0 +1,129 @@
+diff --git a/config.py b/config.py
+index 1c5f2d3..173e652 100644
+--- a/config.py
++++ b/config.py
+@@ -17,6 +17,8 @@ parser.add_argument('--valid-path', default='', type=str, metavar='N',
+                     help='path to valid data')
+ parser.add_argument('--model-dir', default='', type=str, metavar='N',
+                     help='path to model dir')
++parser.add_argument('--resume', default='', type=str,
++                    help='resume an extension checkpoint at the next completed epoch')
+ parser.add_argument('--warmup', default=400, type=int, metavar='N',
+                     help='warmup steps')
+ parser.add_argument('--max-to-keep', default=5, type=int, metavar='N',
+@@ -83,8 +85,9 @@ args = parser.parse_args()
+ 
+ assert not args.train_path or os.path.exists(args.train_path)
+ assert args.pooling in ['cls', 'mean', 'max']
+-assert args.task.lower() in ['wn18rr', 'fb15k237', 'wiki5m_ind', 'wiki5m_trans']
++assert args.task.lower() in ['wn18rr', 'fb15k237', 'nell995', 'wiki5m_ind', 'wiki5m_trans']
+ assert args.lr_scheduler in ['linear', 'cosine']
++assert not args.resume or os.path.isfile(args.resume)
+ 
+ if args.model_dir:
+     os.makedirs(args.model_dir, exist_ok=True)
+diff --git a/models.py b/models.py
+index 562a5ae..e203545 100644
+--- a/models.py
++++ b/models.py
+@@ -1,4 +1,5 @@
+ from abc import ABC
++import os
+ from copy import deepcopy
+ 
+ import torch
+@@ -42,6 +43,10 @@ class CustomBertModel(nn.Module, ABC):
+ 
+         self.hr_bert = AutoModel.from_pretrained(args.pretrained_model)
+         self.tail_bert = deepcopy(self.hr_bert)
++        # Memory-only extension: preserve batch size and full contrastive logits.
++        if os.environ.get('SIMKGC_GRAD_CHECKPOINT') == '1':
++            self.hr_bert.gradient_checkpointing_enable()
++            self.tail_bert.gradient_checkpointing_enable()
+ 
+     def _encode(self, encoder, token_ids, mask, token_type_ids):
+         outputs = encoder(input_ids=token_ids,
+diff --git a/trainer.py b/trainer.py
+index a3ac96d..209a29c 100644
+--- a/trainer.py
++++ b/trainer.py
+@@ -1,5 +1,6 @@
+ import glob
+ import json
++import random
+ import torch
+ import shutil
+ 
+@@ -47,6 +48,8 @@ class Trainer:
+         logger.info('Total training steps: {}, warmup steps: {}'.format(num_training_steps, args.warmup))
+         self.scheduler = self._create_lr_scheduler(num_training_steps)
+         self.best_metric = None
++        self.start_epoch = 0
++        self.scaler = torch.cuda.amp.GradScaler() if self.args.use_amp else None
+ 
+         self.train_loader = torch.utils.data.DataLoader(
+             train_dataset,
+@@ -67,11 +70,11 @@ class Trainer:
+                 num_workers=args.workers,
+                 pin_memory=True)
+ 
+-    def train_loop(self):
+-        if self.args.use_amp:
+-            self.scaler = torch.cuda.amp.GradScaler()
++        if self.args.resume:
++            self._load_resume(self.args.resume)
+ 
+-        for epoch in range(self.args.epochs):
++    def train_loop(self):
++        for epoch in range(self.start_epoch, self.args.epochs):
+             # train for one epoch
+             self.train_epoch(epoch)
+             self._run_eval(epoch=epoch)
+@@ -90,6 +93,13 @@ class Trainer:
+             'epoch': epoch,
+             'args': self.args.__dict__,
+             'state_dict': self.model.state_dict(),
++            'optimizer': self.optimizer.state_dict(),
++            'scheduler': self.scheduler.state_dict(),
++            'scaler': self.scaler.state_dict() if self.scaler is not None else None,
++            'best_metric': self.best_metric,
++            'python_rng_state': random.getstate(),
++            'torch_rng_state': torch.get_rng_state(),
++            'cuda_rng_state_all': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+         }, is_best=is_best, filename=filename)
+         delete_old_ckt(path_pattern='{}/checkpoint_*.mdl'.format(self.args.model_dir),
+                        keep=self.args.max_to_keep)
+@@ -195,6 +205,33 @@ class Trainer:
+         else:
+             logger.info('No gpu will be used')
+ 
++    def _load_resume(self, path):
++        state = torch.load(path, map_location='cpu')
++        required = {'state_dict', 'optimizer', 'scheduler', 'epoch',
++                    'python_rng_state', 'torch_rng_state'}
++        missing = required.difference(state)
++        if missing:
++            raise ValueError('Checkpoint cannot exactly resume; missing {}'.format(sorted(missing)))
++        old_args = state.get('args', {})
++        for key in ('task', 'batch_size', 'epochs', 'lr', 'pre_batch', 'pooling',
++                    'pretrained_model', 'use_link_graph', 'additive_margin'):
++            if old_args.get(key) != getattr(self.args, key):
++                raise ValueError('Resume argument mismatch for {}: {} != {}'.format(
++                    key, old_args.get(key), getattr(self.args, key)))
++        self.model.load_state_dict(state['state_dict'], strict=True)
++        self.optimizer.load_state_dict(state['optimizer'])
++        self.scheduler.load_state_dict(state['scheduler'])
++        if self.scaler is not None and state.get('scaler') is not None:
++            self.scaler.load_state_dict(state['scaler'])
++        self.best_metric = state.get('best_metric')
++        self.start_epoch = int(state['epoch']) + 1
++        random.setstate(state['python_rng_state'])
++        torch.set_rng_state(state['torch_rng_state'])
++        if torch.cuda.is_available() and state.get('cuda_rng_state_all') is not None:
++            torch.cuda.set_rng_state_all(state['cuda_rng_state_all'])
++        logger.info('Resume from {} at epoch {}/{}'.format(
++            path, self.start_epoch, self.args.epochs))
++
+     def _create_lr_scheduler(self, num_training_steps):
+         if self.args.lr_scheduler == 'linear':
+             return get_linear_schedule_with_warmup(optimizer=self.optimizer,

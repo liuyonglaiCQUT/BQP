@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Datasets and generated preprocessing
+/data/
+/model_extensions/data/
+/model_extensions/repos/SimKGC/data/
+/model_extensions/repos/SimKGC/predictions/
+
+# Checkpoints and pretrained weights
+/checkpoints/
+/model_extensions/bert-base-uncased/
+/model_extensions/repos/ULTRA/ckpts/
+/model_extensions/runs/
+*.pt
+*.pth
+*.ckpt
+*.mdl
+*.safetensors
+*.bin
+
+# Results, caches, logs, and environments
+/results_bqp/
+/model_extensions/results/
+/model_extensions/logs/
+/model_extensions/cache/
+/model_extensions/tmp/
+/model_extensions/envs/
+/model_extensions/local_packages/
+/model_extensions/smoke/
+*.log
+
+# Generated figures and archives
+/figures/
+/model_extensions/figures/
+*.tar
+*.tar.gz
+*.zip
+
+# SimKGC is fetched at a pinned revision; its source is not redistributed.
+/model_extensions/repos/SimKGC/
